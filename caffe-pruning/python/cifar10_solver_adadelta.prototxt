@@ -1,0 +1,17 @@
+# reduce the learning rate after 8 epochs (4000 iters) by a factor of 10
+
+# The train/test net protocol buffer definition
+net: "cifar10_quick_train_test.prototxt"
+test_iter: 100
+test_interval: 500
+base_lr: 1.0
+lr_policy: "fixed"
+momentum: 0.95
+weight_decay: 0.0005
+display: 100
+max_iter: 5000
+snapshot: 5000
+snapshot_prefix: "cifar10_adadelta"
+solver_mode: GPU
+type: "AdaDelta"
+delta: 1e-6
