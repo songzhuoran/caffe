@@ -9,17 +9,6 @@ namespace caffe {
 template <typename Dtype>
 void InnerProductLayer<Dtype>::Forward_gpu(const vector<Blob<Dtype>*>& bottom,
     const vector<Blob<Dtype>*>& top) {
-  // prune only once after loading the caffemodel
-  LOG(INFO) << "pruned_cnt = " << pruned_cnt;
-  if (!(pruned_cnt%50000)) {
-    LOG(INFO) << "Prune!!!!!!!!!!!!";
-    caffe_cpu_prune(this->blobs_[0]->count(), pruning_coeff_,
-      this->blobs_[0]->mutable_cpu_data(), masks_[0]->mutable_cpu_data());
-    if (bias_term_) {
-      caffe_cpu_prune(this->blobs_[1]->count(), pruning_coeff_,
-        this->blobs_[1]->mutable_cpu_data(), masks_[1]->mutable_cpu_data());
-    }
-  }
   const Dtype* bottom_data = bottom[0]->gpu_data();
   Dtype* top_data = top[0]->mutable_gpu_data();
   const Dtype* weight = this->blobs_[0]->gpu_data();
@@ -83,16 +72,17 @@ void InnerProductLayer<Dtype>::Backward_gpu(const vector<Blob<Dtype>*>& top,
          (Dtype)0., bottom[0]->mutable_gpu_diff());
     }
   }
-  if (pruning_coeff_ > 0) {
-    pruned_cnt++;
-    if (this->param_propagate_down_[0]) {
-      caffe_gpu_mul(this->blobs_[0]->count(), this->blobs_[0]->gpu_diff(),
-        masks_[0]->gpu_data(), this->blobs_[0]->mutable_gpu_diff());
-      }
-    if (bias_term_ && this->param_propagate_down_[1]) {
-      caffe_gpu_mul(this->blobs_[1]->count(), this->blobs_[1]->gpu_diff(),
-        masks_[1]->gpu_data(), this->blobs_[1]->mutable_gpu_diff());
-      }
+  if (this->param_propagate_down_[0]) { 
+    caffe_gpu_mul(this->blobs_[0]->count(), this->blobs_[0]->gpu_diff(), 
+      this->masks_[0]->gpu_data(), this->blobs_[0]->mutable_gpu_diff());
+    caffe_gpu_mul(this->blobs_[0]->count(), this->blobs_[0]->gpu_data(), 
+      this->masks_[0]->gpu_data(), this->blobs_[0]->mutable_gpu_data());  
+  }
+  if (bias_term_ && this->param_propagate_down_[1]) { 
+    caffe_gpu_mul(this->blobs_[1]->count(), this->blobs_[1]->gpu_diff(), 
+      this->masks_[1]->gpu_data(), this->blobs_[1]->mutable_gpu_diff());
+    caffe_gpu_mul(this->blobs_[1]->count(), this->blobs_[1]->gpu_data(), 
+      this->masks_[1]->gpu_data(), this->blobs_[1]->mutable_gpu_data()); 
   }
 }
 

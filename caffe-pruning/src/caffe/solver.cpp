@@ -184,8 +184,25 @@ void Solver<Dtype>::Step(int iters) {
   losses_.clear();
   smoothed_loss_ = 0;
   iteration_timer_.Start();
-
+  int mask_freq = 2;
+  int on_device_freq= 2;
+  double accuracy_base=0.5;
+  Dtype mask_coeff = 0.3;
+  // control whether to test on device.
+  int on_device_test_freq = 100000;
+  bool if_add_var_forward = false;
   while (iter_ < stop_iter) {
+    // calculate mask every mask_freq times.
+    if(!(iter_ % mask_freq) && mask_coeff!=0){
+      fstream file0("vgg_fault20/0.txt",ios::in);
+      fstream file1("vgg_fault20/1.txt",ios::in);
+      LOG(INFO) << "----------------- make mask! ---------------------";
+      net_->MakeMask(file0, file1, mask_coeff);
+      file0.close();
+      file1.close();
+    }
+    // -------------- end mask -----------------
+
     // zero-init the params
     net_->ClearParamDiffs();
     if (param_.test_interval() && iter_ % param_.test_interval() == 0
@@ -204,10 +221,14 @@ void Solver<Dtype>::Step(int iters) {
     }
     const bool display = param_.display() && iter_ % param_.display() == 0;
     net_->set_debug_info(display && param_.debug_info());
+    if_add_var_forward = false;
+    if(!(iter_ % on_device_test_freq)){
+      if_add_var_forward = false;
+    }
     // accumulate the loss and gradient
     Dtype loss = 0;
     for (int i = 0; i < param_.iter_size(); ++i) {
-      loss += net_->ForwardBackward();
+      loss += net_->ForwardBackward(if_add_var_forward);
     }
     loss /= param_.iter_size();
     // average the loss across iterations for smoothed reporting
@@ -243,6 +264,11 @@ void Solver<Dtype>::Step(int iters) {
     for (int i = 0; i < callbacks_.size(); ++i) {
       callbacks_[i]->on_gradients_ready();
     }
+    fstream file0("vgg_fault20/2.txt",ios::in);
+    fstream file1("vgg_fault20/3.txt",ios::in);
+    net_->add_diff_variation(file0, file1);
+    file0.close();
+    file1.close();
     ApplyUpdate();
 
     // Increment the internal iter_ counter -- its value should always indicate
@@ -263,6 +289,32 @@ void Solver<Dtype>::Step(int iters) {
       // Break out of training loop.
       break;
     }
+
+    // Test and decide whether turn to on-device train.
+    if(!(iter_ % mask_freq)&&(mask_coeff!=0)){
+      fstream file0("vgg_fault20/0.txt",ios::in);
+      fstream file1("vgg_fault20/1.txt",ios::in);
+      LOG(INFO) << "------------------------------------------";
+      LOG(INFO) << "add variation";
+      std::vector<Dtype> original_weight;
+      net_->add_variation(file0, file1, original_weight);
+      file0.close();
+      file1.close();
+      Dtype my_accuracy = TestAllReturn();
+      LOG(INFO) << "------------------------------------------";
+      LOG(INFO) << "accuracy: "<<my_accuracy;
+      if(my_accuracy>accuracy_base||iter_>=on_device_freq){
+        // on-device
+        mask_coeff = 0;
+        this->param_.set_base_lr(0.486);
+        continue;
+      }
+      LOG(INFO) << "------------------------------------------";
+      LOG(INFO) << "recover from variation";
+      net_->recover_from_variation(original_weight);
+    }
+    // Diff*variation
+    
   }
 }
 
@@ -314,6 +366,102 @@ void Solver<Dtype>::Solve(const char* resume_file) {
   }
   LOG(INFO) << "Optimization Done.";
 }
+
+template <typename Dtype>
+Dtype Solver<Dtype>::TestAllReturn() {
+  Dtype accuracy(0);
+  for (int test_net_id = 0;
+       test_net_id < test_nets_.size() && !requested_early_exit_;
+       ++test_net_id) {
+    accuracy = TestReturn(test_net_id);
+    if(accuracy!=0){
+      return accuracy;
+    }
+  }
+  return accuracy;
+}
+
+template <typename Dtype>
+Dtype Solver<Dtype>::TestReturn(const int test_net_id) {
+  CHECK(Caffe::root_solver());
+  LOG(INFO) << "Iteration " << iter_
+            << ", Testing net (#" << test_net_id << ")";
+  CHECK_NOTNULL(test_nets_[test_net_id].get())->
+      ShareTrainedLayersWith(net_.get());
+  vector<Dtype> test_score;
+  vector<int> test_score_output_id;
+  const shared_ptr<Net<Dtype> >& test_net = test_nets_[test_net_id];
+  Dtype loss = 0;
+  for (int i = 0; i < param_.test_iter(test_net_id); ++i) {
+    SolverAction::Enum request = GetRequestedAction();
+    // Check to see if stoppage of testing/training has been requested.
+    while (request != SolverAction::NONE) {
+        if (SolverAction::SNAPSHOT == request) {
+          Snapshot();
+        } else if (SolverAction::STOP == request) {
+          requested_early_exit_ = true;
+        }
+        request = GetRequestedAction();
+    }
+    if (requested_early_exit_) {
+      // break out of test loop.
+      break;
+    }
+
+    Dtype iter_loss;
+    const vector<Blob<Dtype>*>& result =
+        test_net->Forward(&iter_loss);
+    if (param_.test_compute_loss()) {
+      loss += iter_loss;
+    }
+    if (i == 0) {
+      for (int j = 0; j < result.size(); ++j) {
+        const Dtype* result_vec = result[j]->cpu_data();
+        for (int k = 0; k < result[j]->count(); ++k) {
+          test_score.push_back(result_vec[k]);
+          test_score_output_id.push_back(j);
+        }
+      }
+    } else {
+      int idx = 0;
+      for (int j = 0; j < result.size(); ++j) {
+        const Dtype* result_vec = result[j]->cpu_data();
+        for (int k = 0; k < result[j]->count(); ++k) {
+          test_score[idx++] += result_vec[k];
+        }
+      }
+    }
+  }
+  if (requested_early_exit_) {
+    LOG(INFO)     << "Test interrupted.";
+    return 0;
+  }
+  if (param_.test_compute_loss()) {
+    loss /= param_.test_iter(test_net_id);
+    LOG(INFO) << "Test loss: " << loss;
+  }
+  Dtype accuracy(0);
+  for (int i = 0; i < test_score.size(); ++i) {
+    const int output_blob_index =
+        test_net->output_blob_indices()[test_score_output_id[i]];
+    const string& output_name = test_net->blob_names()[output_blob_index];
+    const Dtype loss_weight = test_net->blob_loss_weights()[output_blob_index];
+    ostringstream loss_msg_stream;
+    const Dtype mean_score = test_score[i] / param_.test_iter(test_net_id);
+    if (loss_weight) {
+      loss_msg_stream << " (* " << loss_weight
+                      << " = " << loss_weight * mean_score << " loss)";
+    }
+    LOG(INFO) << "    Test net output #" << i << ": " << output_name << " = "
+              << mean_score << loss_msg_stream.str();
+    if(output_name=="accuracy"){
+      return mean_score;
+    }
+  }
+  return accuracy;
+}
+
+
 
 template <typename Dtype>
 void Solver<Dtype>::TestAll() {

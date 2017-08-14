@@ -1,16 +1,11 @@
 #include <boost/math/special_functions/next.hpp>
 #include <boost/random.hpp>
 
-#include <cmath>
-#include <functional>
 #include <limits>
-#include <utility>
-#include <vector>
 
 #include "caffe/common.hpp"
 #include "caffe/util/math_functions.hpp"
 #include "caffe/util/rng.hpp"
-#include <fstream>
 
 namespace caffe {
 
@@ -386,59 +381,5 @@ void caffe_cpu_scale<double>(const int n, const double alpha, const double *x,
   cblas_dcopy(n, x, 1, y, 1);
   cblas_dscal(n, alpha, y, 1);
 }
-template <typename Dtype>
-void caffe_cpu_prune(const int n, const Dtype coeff, Dtype* x,Dtype* mask) {
-// Partial sort to find the %coeff lowest absolute values of x
-  std::vector<std::pair<Dtype, int> > indexed_x;
-  // 打开variation文件
-  fstream file0;
-  fstream file1;
-  Dtype variation0;
-  Dtype variation1;
-  Dtype loss0;
-  Dtype loss1;
-  file0.open("vgg_fault16/0.txt",ios::in);
-  file1.open("vgg_fault16/1.txt",ios::in);
-  for (int k = 0; k < n; ++k) {
-    file0>>variation0;
-    file1>>variation1;
-    loss0=std::abs(x[k]-x[k]*variation0);
-    loss1=std::abs(x[k]-x[k]*variation1);
-    if(loss0<loss1)
-    {
-      indexed_x.push_back(std::make_pair(loss0, k));
-    }
-    else
-    {
-      indexed_x.push_back(std::make_pair(loss1, k));
-    }
-  }
-
-  std::partial_sort(
-  indexed_x.begin(), indexed_x.begin() + std::floor(coeff*n),
-  indexed_x.end(), std::greater<std::pair<Dtype, int> >());
-  for (int k = 0; k < std::floor(coeff * n); k++) {
-	  x[indexed_x[k].second] = 0;
-	  mask[indexed_x[k].second] = 0;
-    
-	}
-  // int ce0=0;
-  // int cen0=0;
-  // for (int k = 0; k < n; ++k) {
-  //   if(mask[k]==0){
-  //     ce0++;
-  //   }else{
-  //     cen0++;
-  //   }
-  // }
-  // LOG(INFO) << "ce0 = " << ce0;
-  // LOG(INFO) << "cen0 = " << cen0;
-}
-
-template
-void caffe_cpu_prune<double>(const int n, const double coeff, double* x,double* mask);
-
-template
-void caffe_cpu_prune<float>(const int n, const float coeff, float* x,float* mask);
 
 }  // namespace caffe
